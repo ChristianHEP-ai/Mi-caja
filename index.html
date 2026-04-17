@@ -9,7 +9,7 @@
 <meta name="apple-mobile-web-app-title" content="Mi Caja">
 <title>Mi Caja Registradora</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="https://unpkg.com/@zxing/library@0.19.1/umd/index.min.js"></script>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f5;color:#222;font-size:15px}
@@ -83,6 +83,14 @@
   .inv-toolbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px}
   /* Scrollable tables on mobile */
   .table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  /* Buscador */
+  .search-results{background:#fff;border:1px solid #ddd;border-radius:8px;margin-top:4px;max-height:220px;overflow-y:auto;display:none}
+  .search-item{padding:10px 12px;border-bottom:1px solid #f0f0f0;cursor:pointer;display:flex;justify-content:space-between;align-items:center;font-size:13px}
+  .search-item:last-child{border-bottom:none}
+  .search-item:active{background:#f5f5f5}
+  .search-item .s-nom{font-weight:500;color:#111}
+  .search-item .s-info{font-size:11px;color:#888;margin-top:2px}
+  .search-item .s-precio{font-weight:700;color:#1D9E75;white-space:nowrap;margin-left:8px}
   /* Bottom safe area for iOS */
   @supports(padding:max(0px)){
     .panel:last-child{padding-bottom:max(16px,env(safe-area-inset-bottom))}
@@ -107,13 +115,8 @@
 <!-- SCANNER MODAL -->
 <div class="scan-modal" id="scan-modal" style="display:none">
   <div style="color:#fff;font-size:16px;font-weight:600;margin-bottom:14px">Escáner de código de barras</div>
-  <div class="scan-frame">
-    <video id="scan-video" autoplay playsinline muted></video>
-    <div class="scan-line"></div>
-    <div class="scan-result-flash" id="scan-flash"></div>
-  </div>
-  <div style="color:#aaa;font-size:13px;margin-top:12px;text-align:center">Apunta la cámara al código de barras</div>
-  <div id="scan-modal-msg" style="color:#1D9E75;font-size:14px;font-weight:600;margin-top:10px;min-height:22px;text-align:center"></div>
+  <div id="qr-reader" style="width:100%;max-width:420px;border-radius:12px;overflow:hidden"></div>
+  <div id="scan-modal-msg" style="color:#1D9E75;font-size:14px;font-weight:600;margin-top:14px;min-height:22px;text-align:center"></div>
   <button onclick="closeScanner()" style="margin-top:18px;background:#fff;border:none;padding:12px 36px;border-radius:10px;font-size:15px;font-weight:600;cursor:pointer;color:#222">✕ Cerrar cámara</button>
 </div>
 
@@ -139,6 +142,11 @@
       <button class="btn-cam" style="width:100%;padding:11px;margin-bottom:14px;font-size:14px" onclick="openScanner('venta')">
         📷 Escanear con cámara
       </button>
+      <div style="position:relative;margin-bottom:14px">
+        <label style="font-weight:600;font-size:13px;margin-bottom:6px">🔍 Buscar producto por nombre</label>
+        <input id="search-input" type="text" placeholder="Escribe nombre del producto..." style="margin:0" oninput="searchProducts()" autocomplete="off">
+        <div class="search-results" id="search-results"></div>
+      </div>
       <div id="scan-msg"></div>
       <div id="cart-list"></div>
     </div>
@@ -286,7 +294,7 @@ let pinEntered = '';
 let inventory = JSON.parse(localStorage.getItem('caja_inventory') || '[]');
 let sales = JSON.parse(localStorage.getItem('caja_sales') || '[]');
 let cart = [], payMethod = null, cajaCerrada = false;
-let codeReader = null, scannerContext = null, scannerStream = null;
+let html5QrCode = null, scannerContext = null;
 
 // Si no hay inventario, carga ejemplos
 if (!inventory.length) {
@@ -342,48 +350,42 @@ function updatePinDisplay() {
 // ====== SCANNER ======
 async function openScanner(ctx) {
   scannerContext = ctx;
-  const modal = document.getElementById('scan-modal');
-  const video = document.getElementById('scan-video');
-  const msgEl = document.getElementById('scan-modal-msg');
-  msgEl.textContent = 'Iniciando cámara...';
-  modal.style.display = 'flex';
+  document.getElementById('scan-modal').style.display = 'flex';
+  document.getElementById('scan-modal-msg').textContent = 'Iniciando cámara...';
+  if (!window.Html5Qrcode) {
+    document.getElementById('scan-modal-msg').textContent = '⚠️ Librería no cargada. Intenta de nuevo.';
+    return;
+  }
   try {
-    scannerStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
-    });
-    video.srcObject = scannerStream;
-    await video.play();
-    if (window.ZXing) {
-      codeReader = new ZXing.BrowserMultiFormatReader();
-      msgEl.textContent = '';
-      codeReader.decodeFromVideoElement(video, (result, err) => {
-        if (result) { flashSuccess(); handleScannedCode(result.getText()); }
-      });
-    } else {
-      msgEl.textContent = 'Cargando escáner...';
-    }
+    html5QrCode = new Html5Qrcode('qr-reader');
+    await html5QrCode.start(
+      { facingMode: 'environment' },
+      { fps: 10, qrbox: { width: 280, height: 180 }, aspectRatio: 1.5 },
+      (code) => { handleScannedCode(code); },
+      () => {}
+    );
+    document.getElementById('scan-modal-msg').textContent = '';
   } catch (e) {
-    msgEl.textContent = '⚠️ No se pudo acceder a la cámara. Verifica los permisos.';
+    document.getElementById('scan-modal-msg').textContent = '⚠️ No se pudo acceder a la cámara. Verifica los permisos.';
   }
 }
 function flashSuccess() {
-  const f = document.getElementById('scan-flash');
-  f.style.opacity = '1';
-  setTimeout(() => f.style.opacity = '0', 500);
+  const el = document.getElementById('qr-reader');
+  el.style.outline = '4px solid #1D9E75';
+  setTimeout(() => el.style.outline = 'none', 500);
 }
 function handleScannedCode(code) {
   const msgEl = document.getElementById('scan-modal-msg');
   if (scannerContext === 'venta') {
     const prod = inventory.find(p => p.cod === code);
-    if (!prod) { msgEl.textContent = '❌ No encontrado: ' + code; return; }
-    if (prod.stock <= 0) { msgEl.textContent = '❌ Sin stock: ' + prod.nom; return; }
+    if (!prod) { msgEl.textContent = '❌ No encontrado: ' + code; setTimeout(()=>msgEl.textContent='',2000); return; }
+    if (prod.stock <= 0) { msgEl.textContent = '❌ Sin stock: ' + prod.nom; setTimeout(()=>msgEl.textContent='',2000); return; }
     const ex = cart.find(c => c.cod === code);
     if (ex) {
-      if (ex.qty >= prod.stock) { msgEl.textContent = '⚠️ Stock máximo alcanzado'; return; }
+      if (ex.qty >= prod.stock) { msgEl.textContent = '⚠️ Stock máximo'; setTimeout(()=>msgEl.textContent='',2000); return; }
       ex.qty++;
-    } else {
-      cart.push({ ...prod, qty: 1 });
-    }
+    } else { cart.push({ ...prod, qty: 1 }); }
+    flashSuccess();
     msgEl.textContent = '✓ ' + prod.nom;
     renderCart();
     setTimeout(() => msgEl.textContent = '', 1500);
@@ -393,11 +395,51 @@ function handleScannedCode(code) {
     setTimeout(() => closeScanner(), 800);
   }
 }
-function closeScanner() {
+async function closeScanner() {
   document.getElementById('scan-modal').style.display = 'none';
-  if (codeReader) { try { codeReader.reset(); } catch (e) {} codeReader = null; }
-  if (scannerStream) { scannerStream.getTracks().forEach(t => t.stop()); scannerStream = null; }
-  document.getElementById('scan-video').srcObject = null;
+  if (html5QrCode) {
+    try { await html5QrCode.stop(); html5QrCode.clear(); } catch(e) {}
+    html5QrCode = null;
+  }
+}
+
+// ====== BUSCADOR ======
+function searchProducts() {
+  const q = document.getElementById('search-input').value.trim().toLowerCase();
+  const res = document.getElementById('search-results');
+  if (!q) { res.style.display = 'none'; return; }
+  const matches = inventory.filter(p =>
+    p.nom.toLowerCase().includes(q) || p.cod.includes(q)
+  );
+  if (!matches.length) {
+    res.innerHTML = '<div class="search-item"><div><div class="s-nom">Sin resultados</div></div></div>';
+    res.style.display = 'block'; return;
+  }
+  res.innerHTML = matches.map((p, i) => {
+    const est = p.stock === 0 ? '❌ Sin stock' : p.stock <= 5 ? '⚠️ Stock bajo: '+p.stock : '✓ Stock: '+p.stock;
+    return `<div class="search-item" onclick="addFromSearch('${p.cod}')">
+      <div>
+        <div class="s-nom">${p.nom}</div>
+        <div class="s-info">${est} · Cód: ${p.cod}</div>
+      </div>
+      <div class="s-precio">${fmt(p.precio)}</div>
+    </div>`;
+  }).join('');
+  res.style.display = 'block';
+}
+function addFromSearch(cod) {
+  if (cajaCerrada) { showMsg('scan-msg','Caja cerrada.','error'); return; }
+  const prod = inventory.find(p => p.cod === cod);
+  if (!prod || prod.stock <= 0) { showMsg('scan-msg','Sin stock disponible','error'); return; }
+  const ex = cart.find(c => c.cod === cod);
+  if (ex) {
+    if (ex.qty >= prod.stock) { showMsg('scan-msg','Stock máximo alcanzado','error'); return; }
+    ex.qty++;
+  } else { cart.push({ ...prod, qty: 1 }); }
+  document.getElementById('search-input').value = '';
+  document.getElementById('search-results').style.display = 'none';
+  showMsg('scan-msg', prod.nom + ' agregado ✓', 'success');
+  renderCart();
 }
 
 // ====== TABS ======
